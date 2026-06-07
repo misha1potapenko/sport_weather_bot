@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO)
 async def main():
     # Инициализация бота и диспетчера с хранилищем состояний в памяти
     # Увеличиваем таймаут до 60 секунд
-    session = AiohttpSession(timeout=ClientTimeout(total=60))
+    session = AiohttpSession(timeout=60)
     bot = Bot(token=BOT_TOKEN, session=session)
     dp = Dispatcher(storage=MemoryStorage())
 

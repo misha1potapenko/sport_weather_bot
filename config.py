@@ -20,6 +20,9 @@ DAILY_VARIABLES = [
     "temperature_2m_max",
     "temperature_2m_min",
     "wind_speed_10m_max",
+    "rain_sum",
+    "showers_sum",
+    "precipitation_hours",
     "sunrise",
     "sunset"
 ]

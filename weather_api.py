@@ -39,8 +39,9 @@ async def get_weather_forecast(city_name: str, forecast_type: str) -> Dict[str, 
         "timezone": "auto",
         "models": "ecmwf_ifs",
         "hourly": ",".join(HOURLY_VARIABLES),
-        "daily": ",".join(DAILY_VARIABLES) if forecast_type == "3days" else None
     }
+    if forecast_type == "3days":
+        params["daily"] = ",".join(DAILY_VARIABLES)
 
     # Установка временных рамок в зависимости от типа прогноза
     now = datetime.now()

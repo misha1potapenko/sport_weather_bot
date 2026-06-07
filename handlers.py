@@ -75,6 +75,7 @@ async def process_city(message: Message, state: FSMContext):
         await message.answer(response_text)
 
     await state.clear()
+    await message.answer("⏳ Получаю данные...", request_timeout=60)
     await message.answer("Что ещё вас интересует?", reply_markup=get_main_keyboard())
 
 

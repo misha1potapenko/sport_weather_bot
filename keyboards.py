@@ -1,14 +1,13 @@
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-
-def get_main_keyboard() -> InlineKeyboardMarkup:
-    """Главная клавиатура с основными кнопками"""
-    builder = InlineKeyboardBuilder()
-
-    builder.button(text="🌤 Прогноз на 3 дня", callback_data="forecast_3days")
-    builder.button(text="⏰ Почасовой прогноз на сегодня", callback_data="forecast_today")
-    builder.button(text="⏰ Почасовой прогноз на завтра", callback_data="forecast_tomorrow")
-
-    builder.adjust(1)  # Располагаем кнопки в столбик
-    return builder.as_markup()
+def get_main_reply_keyboard() -> ReplyKeyboardMarkup:
+    buttons = [
+        [KeyboardButton(text="🌤 Прогноз на сегодня")],
+        [KeyboardButton(text="⛅ Прогноз на завтра")],
+        [KeyboardButton(text="📅 Прогноз на неделю")]
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard=buttons,
+        resize_keyboard=True,
+        one_time_keyboard=False
+    )

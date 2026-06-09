@@ -1,22 +1,17 @@
 from datetime import datetime
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
-from aiogram.filters import CommandStart, Command, StateFilter
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import Message, ReplyKeyboardRemove
+from aiogram.filters import CommandStart, Command
 
-from keyboards import get_main_keyboard
+from keyboards import get_main_reply_keyboard
 from weather_api import get_weather_forecast
 
 router = Router()
 
 
-# ---------------------- Состояния ----------------------
-class WeatherStates(StatesGroup):
-    waiting_for_city = State()
-
-
-# ---------------------- Вспомогательная функция для длинных сообщений ----------------------
+# ------------------------------------------------------------
+# Вспомогательные функции форматирования (без звёздочек)
+# ------------------------------------------------------------
 async def safe_send(message: Message, text: str):
     if len(text) > 4096:
         for x in range(0, len(text), 4096):
@@ -25,94 +20,18 @@ async def safe_send(message: Message, text: str):
         await message.answer(text)
 
 
-# ---------------------- Форматирование прогноза на 3 дня (с интервалами дождя) ----------------------
-def format_daily_forecast(data: dict) -> str:
-    city = data["city_info"]["name"]
-    daily = data["daily"]
-    hourly = data.get("hourly", {})
-    daily_times = daily["time"]
-
-    hourly_times = hourly.get("time", [])
-    hourly_rain = hourly.get("rain", [])
-    hourly_showers = hourly.get("showers", [])
-    hourly_prob = hourly.get("precipitation_probability", [])
-
-    result = f"🌍 **Прогноз погоды для {city} (ECMWF IFS HRES)**\n\n"
-
-    for i, day_time in enumerate(daily_times):
-        day_date = datetime.fromisoformat(day_time)
-        day_name = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"][day_date.weekday()]
-
-        temp_max = daily["temperature_2m_max"][i]
-        temp_min = daily["temperature_2m_min"][i]
-        wind_max = daily["wind_speed_10m_max"][i]
-
-        # Собираем часы с осадками для этого дня (индекс и время)
-        rain_hours = []
-        for j, hour_time in enumerate(hourly_times):
-            if hour_time.startswith(day_time.split("T")[0]):
-                rain_val = hourly_rain[j] if j < len(hourly_rain) else 0
-                showers_val = hourly_showers[j] if j < len(hourly_showers) else 0
-                prob_val = hourly_prob[j] if j < len(hourly_prob) else 0
-                total_precip = rain_val + showers_val
-                if total_precip > 0.1 or prob_val > 30:
-                    hour_str = hour_time.split("T")[1][:5]
-                    rain_hours.append((j, hour_str))
-
-        # Группировка последовательных часов
-        intervals = []
-        if rain_hours:
-            current = [rain_hours[0][1]]
-            for k in range(1, len(rain_hours)):
-                if rain_hours[k][0] == rain_hours[k - 1][0] + 1:
-                    current.append(rain_hours[k][1])
-                else:
-                    intervals.append(current)
-                    current = [rain_hours[k][1]]
-            intervals.append(current)
-
-        if not intervals:
-            rain_desc = "Осадков не ожидается"
-        else:
-            parts = []
-            for interval in intervals:
-                start = interval[0]
-                end = interval[-1]
-                duration = len(interval)
-                if start == end:
-                    parts.append(f"в {start}")
-                else:
-                    parts.append(f"с {start} до {end} ({duration} ч)")
-            rain_desc = "Дождь: " + ", ".join(parts)
-
-        result += f"**{day_name}, {day_time}**\n"
-        result += f"🌡 **Температура:** {temp_min:.1f}°C…{temp_max:.1f}°C\n"
-        result += f"💨 **Ветер (макс.):** {wind_max:.1f} км/ч\n"
-        result += f"☔️ **Осадки:** {rain_desc}\n"
-        result += "────────────────────\n"
-
-    return result
-
-
-# ---------------------- Почасовой прогноз с интервалом 3 часа ----------------------
-def format_hourly_forecast(data: dict, forecast_type: str) -> str:
+def format_hourly_forecast(data: dict, day_label: str) -> str:
+    """Почасовой прогноз с интервалом 3 часа, без звёздочек"""
     city = data["city_info"]["name"]
     hourly = data["hourly"]
     times = hourly["time"]
 
-    day_label = "сегодня" if forecast_type == "forecast_today" else "завтра"
+    result = f"🌍 Прогноз погоды для {city} ({day_label})\n"
+    result += "Модель ECMWF IFS HRES (9 км)\n"
+    result += "Интервалы по 3 часа\n\n"
 
-    # Группировка по 3 часа
-    intervals = []
     for start_hour in range(0, 24, 3):
         end_hour = start_hour + 3
-        intervals.append((start_hour, end_hour))
-
-    result = f"🌍 **Прогноз погоды для {city} ({day_label})**\n"
-    result += "ECMWF IFS HRES (9 км)\n"
-    result += "⏱ Интервалы по 3 часа\n\n"
-
-    for start_h, end_h in intervals:
         temps = []
         winds = []
         probs = []
@@ -122,7 +41,7 @@ def format_hourly_forecast(data: dict, forecast_type: str) -> str:
         for i, time in enumerate(times):
             dt = datetime.fromisoformat(time)
             hour = dt.hour
-            if start_h <= hour < end_h:
+            if start_hour <= hour < end_hour:
                 temps.append(hourly["temperature_2m"][i])
                 winds.append(hourly["wind_speed_10m"][i])
                 probs.append(hourly["precipitation_probability"][i])
@@ -138,121 +57,143 @@ def format_hourly_forecast(data: dict, forecast_type: str) -> str:
         avg_wind = sum(winds) / count
         max_prob = max(probs)
 
-        interval_str = f"{start_h:02d}:00–{end_h:02d}:00"
-        result += f"**{interval_str}** 🌡 {avg_temp:.1f}°C  💨 {avg_wind:.1f} км/ч\n"
-        result += f"☔ {total_precip:.1f} мм осадков  (вероятность {max_prob:.0f}%)\n"
-        result += "──────────────\n"
+        interval_str = f"{start_hour:02d}:00-{end_hour:02d}:00"
+        result += f"{interval_str}  температура {avg_temp:.1f}°C, ветер {avg_wind:.1f} км/ч\n"
+        result += f"Осадки: {total_precip:.1f} мм (вероятность {max_prob:.0f}%)\n"
+        result += "------------------------\n"
 
     return result
 
 
-# ---------------------- Команда /start (удаляет старую Reply-клавиатуру) ----------------------
+def format_weekly_forecast(data: dict) -> str:
+    """Прогноз на неделю (daily), без звёздочек"""
+    city = data["city_info"]["name"]
+    daily = data["daily"]
+    times = daily["time"]
+
+    result = f"🌍 Прогноз погоды для {city} на неделю\n"
+    result += "Модель ECMWF IFS HRES\n\n"
+
+    for i, day_time in enumerate(times):
+        day_date = datetime.fromisoformat(day_time)
+        day_name = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][day_date.weekday()]
+
+        temp_max = daily["temperature_2m_max"][i]
+        temp_min = daily["temperature_2m_min"][i]
+        wind_max = daily["wind_speed_10m_max"][i]
+        rain_sum = daily.get("rain_sum", [0])[i] or 0
+        showers_sum = daily.get("showers_sum", [0])[i] or 0
+        total_precip = rain_sum + showers_sum
+
+        result += f"{day_name} {day_time}\n"
+        result += f"Температура макс: {temp_max:.1f}°C, мин: {temp_min:.1f}°C\n"
+        result += f"Ветер макс: {wind_max:.1f} км/ч\n"
+        if total_precip > 0:
+            result += f"Осадки: {total_precip:.1f} мм\n"
+        else:
+            result += "Осадков не ожидается\n"
+        result += "--------------------\n"
+
+    return result
+
+
+# ------------------------------------------------------------
+# Команда /start – показывает Reply-клавиатуру
+# ------------------------------------------------------------
 @router.message(CommandStart())
-async def start_command(message: Message, state: FSMContext):
-    await state.clear()
-    # Сначала убираем старую Reply-клавиатуру (если есть)
+async def start_command(message: Message):
     await message.answer(
-        "Обновляем меню...",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    # Затем отправляем приветствие с Inline-кнопками
-    await message.answer(
-        "Привет! Я бот прогноза погоды 🌤\n"
-        "Я использую самую точную модель ECMWF IFS HRES от Open-Meteo.\n\n"
-        "Вы можете:\n"
-        "• Нажать на кнопки ниже\n"
-        "• Написать название города (например, `Москва`)\n"
-        "• Использовать команду `/weather Москва`\n\n"
-        "Сразу получите прогноз на 3 дня!",
-        reply_markup=get_main_keyboard()
+        "Привет! Я бот прогноза погоды.\n"
+        "Я использую точную модель ECMWF IFS HRES.\n\n"
+        "Нажми на одну из кнопок внизу, затем напиши название города.",
+        reply_markup=get_main_reply_keyboard()
     )
 
 
-# ---------------------- Обработка нажатий на инлайн-кнопки ----------------------
-@router.callback_query(F.data.in_(["forecast_3days", "forecast_today", "forecast_tomorrow"]))
-async def ask_city(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(forecast_type=callback.data)
-    await callback.message.answer("Введите название города:")
-    await state.set_state(WeatherStates.waiting_for_city)
-    await callback.answer()
-
-
-# ---------------------- Обработка ввода города (после кнопки) ----------------------
-@router.message(WeatherStates.waiting_for_city)
-async def process_city(message: Message, state: FSMContext):
-    city_name = message.text.strip()
-    user_data = await state.get_data()
-    forecast_type = user_data.get("forecast_type")
-
-    if not forecast_type:
-        await message.answer("Пожалуйста, начните заново через /start")
-        await state.clear()
-        return
-
-    processing_msg = await message.answer("⏳ Получаю данные с Open-Meteo ECMWF IFS HRES...")
-
-    if forecast_type == "forecast_3days":
-        api_type = "3days"
-    elif forecast_type == "forecast_today":
-        api_type = "today"
+# ------------------------------------------------------------
+# Обработка нажатий на Reply-кнопки (текст)
+# ------------------------------------------------------------
+@router.message(F.text.in_(["🌤 Прогноз на сегодня", "⛅ Прогноз на завтра", "📅 Прогноз на неделю"]))
+async def reply_button_handler(message: Message):
+    button_text = message.text
+    if button_text == "🌤 Прогноз на сегодня":
+        forecast_type = "today"
+        day_label = "сегодня"
+    elif button_text == "⛅ Прогноз на завтра":
+        forecast_type = "tomorrow"
+        day_label = "завтра"
     else:
-        api_type = "tomorrow"
+        forecast_type = "weekly"
+        day_label = None
 
-    forecast_data = await get_weather_forecast(city_name, api_type)
-    await processing_msg.delete()
+    # Запоминаем тип в диалоге? Просто попросим город.
+    # Будем использовать простой словарь в памяти (можно через FSM, но для простоты – глобальный словарь)
+    # Или попросим город и затем обработаем. Сделаем так: после нажатия кнопки переходим в состояние ввода города.
+    # Но чтобы не усложнять, воспользуемся FSM.
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.state import State, StatesGroup
 
-    if "error" in forecast_data:
-        await message.answer(f"❌ Ошибка: {forecast_data['error']}\nПопробуйте другой город или используйте кнопки.")
-        await state.clear()
+    class WeatherState(StatesGroup):
+        waiting_city = State()
+
+    state = FSMContext(message.bot, message.chat.id, message.from_user.id)
+    await state.update_data(forecast_type=forecast_type, day_label=day_label)
+    await state.set_state(WeatherState.waiting_city)
+    await message.answer("Введите название города:")
+
+
+# ------------------------------------------------------------
+# Обработка ввода города
+# ------------------------------------------------------------
+@router.message(lambda msg: True)  # будет ловить все сообщения, но с проверкой состояния
+async def process_city_input(message: Message):
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.state import State, StatesGroup
+
+    class WeatherState(StatesGroup):
+        waiting_city = State()
+
+    state = FSMContext(message.bot, message.chat.id, message.from_user.id)
+    current_state = await state.get_state()
+    if current_state != WeatherState.waiting_city.state:
+        # Если не ждём город, возможно пользователь просто написал город без кнопки – сделаем прогноз на неделю по умолчанию
+        city = message.text.strip()
+        if len(city) < 2:
+            await message.answer("Слишком короткое название. Нажмите кнопку и введите город ещё раз.")
+            return
+        processing = await message.answer("Получаю прогноз на неделю...")
+        forecast_data = await get_weather_forecast(city, "weekly")
+        await processing.delete()
+        if "error" in forecast_data:
+            await message.answer(f"Ошибка: {forecast_data['error']}\nПопробуйте другой город.")
+            return
+        response = format_weekly_forecast(forecast_data)
+        await safe_send(message, response)
         return
 
-    if forecast_type == "forecast_3days":
-        response_text = format_daily_forecast(forecast_data)
-    else:
-        response_text = format_hourly_forecast(forecast_data, forecast_type)
-
-    await safe_send(message, response_text)
-    await state.clear()
-    await message.answer("Что ещё вас интересует?", reply_markup=get_main_keyboard())
-
-
-# ---------------------- Команда /weather ----------------------
-@router.message(Command("weather"))
-async def weather_command(message: Message, command: Command):
-    city = command.args
-    if not city:
-        await message.answer("Пожалуйста, укажите город после команды.\nПример: `/weather Москва`",
-                             parse_mode="Markdown")
-        return
-
-    processing_msg = await message.answer("⏳ Получаю прогноз на 3 дня...")
-    forecast_data = await get_weather_forecast(city.strip(), "3days")
-    await processing_msg.delete()
-
-    if "error" in forecast_data:
-        await message.answer(f"❌ {forecast_data['error']}\nПопробуйте другой город или используйте кнопки.")
-        return
-
-    response_text = format_daily_forecast(forecast_data)
-    await safe_send(message, response_text)
-
-
-# ---------------------- Простой текстовый ввод (без состояния) ----------------------
-@router.message(F.text, ~F.text.startswith('/'), StateFilter(None))
-async def text_city_handler(message: Message):
+    # Если находимся в состоянии ожидания города
+    data = await state.get_data()
+    forecast_type = data.get("forecast_type")
+    day_label = data.get("day_label")
     city = message.text.strip()
     if len(city) < 2:
         await message.answer("Слишком короткое название. Введите полное название города.")
         return
 
-    processing_msg = await message.answer("⏳ Получаю прогноз на 3 дня...")
-    forecast_data = await get_weather_forecast(city, "3days")
-    await processing_msg.delete()
+    processing = await message.answer("Получаю данные с Open-Meteo...")
+    forecast_data = await get_weather_forecast(city, forecast_type)
+    await processing.delete()
 
     if "error" in forecast_data:
-        await message.answer(f"❌ Город `{city}` не найден.\nПожалуйста, проверьте название или используйте кнопки.",
-                             parse_mode="Markdown")
+        await message.answer(f"Ошибка: {forecast_data['error']}\nПопробуйте другой город или начните заново с /start.")
+        await state.clear()
         return
 
-    response_text = format_daily_forecast(forecast_data)
-    await safe_send(message, response_text)
+    if forecast_type == "weekly":
+        response = format_weekly_forecast(forecast_data)
+    else:
+        response = format_hourly_forecast(forecast_data, day_label)
+
+    await safe_send(message, response)
+    await state.clear()
+    await message.answer("Можешь выбрать другую кнопку внизу.", reply_markup=get_main_reply_keyboard())

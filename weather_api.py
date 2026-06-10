@@ -47,13 +47,14 @@ async def get_weather_forecast(city_name: str, forecast_type: str) -> Dict[str, 
             "end_date": end_date
         }
     else:  # weekly (7 дней)
-        end_date = (now + timedelta(days=6)).strftime("%Y-%m-%d")  # 7 дней включая сегодня
+        end_date = (now + timedelta(days=6)).strftime("%Y-%m-%d")
         params = {
             "latitude": coords["lat"],
             "longitude": coords["lon"],
             "timezone": "auto",
             "models": "ecmwf_ifs",
             "daily": ",".join(DAILY_VARIABLES),
+            "hourly": ",".join(HOURLY_VARIABLES),   # добавляем почасовые данные для анализа осадков
             "start_date": now.strftime("%Y-%m-%d"),
             "end_date": end_date
         }

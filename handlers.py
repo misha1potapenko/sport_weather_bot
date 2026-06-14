@@ -4,7 +4,7 @@ from aiogram.types import Message
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-
+from logger import log_user_request
 from keyboards import get_main_reply_keyboard
 from weather_api import get_weather_forecast
 
@@ -155,6 +155,8 @@ async def process_city_input(message: Message, state: FSMContext):
         response = format_weekly_forecast(forecast_data)
     else:
         response = format_hourly_forecast(forecast_data, day_label)
+    username = message.from_user.username
+    log_user_request(city, message.from_user.id, username)
     await safe_send(message, response)
     await state.clear()
     await message.answer("Выберите другую кнопку внизу.", reply_markup=get_main_reply_keyboard())
@@ -171,4 +173,6 @@ async def text_city_fallback(message: Message):
         await message.answer(f"Город '{city}' не найден. Нажмите кнопку и введите город ещё раз.")
         return
     response = format_weekly_forecast(forecast_data)
+    username = message.from_user.username
+    log_user_request(city, message.from_user.id, username)
     await safe_send(message, response)

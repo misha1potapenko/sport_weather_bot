@@ -1,6 +1,9 @@
 from datetime import datetime
+import json
+import os
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove, ReplyKeyboardMarkup, KeyboardButton, \
+    InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -10,14 +13,12 @@ from weather_api import get_weather_forecast
 from formatters import safe_send, format_hourly_forecast, format_weekly_forecast
 from logger import log_user_request
 
-import json
-import os
-
 router = Router()
 
 
 class WeatherState(StatesGroup):
-    waiting_city = State()  # для прогноза и для рассылки (различаем по флагу)
+    waiting_city = State()  # для ввода города (прогноз и начало рассылки)
+    waiting_hour = State()  # для выбора часа
 
 
 # ------------------------------------------------------------
@@ -34,7 +35,7 @@ async def start_command(message: Message):
 
 
 # ------------------------------------------------------------
-# Обработка нажатий на кнопки прогнозов (сегодня, завтра, неделя)
+# Обработка кнопок прогноза (сегодня, завтра, неделя)
 # ------------------------------------------------------------
 @router.message(F.text.in_(["🌤 Прогноз на сегодня", "⛅ Прогноз на завтра", "📅 Прогноз на неделю"]))
 async def forecast_button_handler(message: Message, state: FSMContext):
@@ -49,8 +50,7 @@ async def forecast_button_handler(message: Message, state: FSMContext):
         forecast_type = "weekly"
         day_label = None
 
-    # Сохраняем, что это запрос прогноза (не рассылка)
-    await state.update_data(forecast_type=forecast_type, day_label=day_label, subscription=False)
+    await state.update_data(forecast_type=forecast_type, day_label=day_label, is_subscription=False)
     await state.set_state(WeatherState.waiting_city)
     await message.answer("Введите название города:")
 
@@ -60,8 +60,7 @@ async def forecast_button_handler(message: Message, state: FSMContext):
 # ------------------------------------------------------------
 @router.message(F.text == "⏰ Настроить рассылку")
 async def subscription_button_handler(message: Message, state: FSMContext):
-    # Сохраняем, что это настройка рассылки
-    await state.update_data(subscription=True)
+    await state.update_data(is_subscription=True)
     await state.set_state(WeatherState.waiting_city)
     await message.answer(
         "Настройка ежедневной рассылки прогноза.\n"
@@ -70,7 +69,7 @@ async def subscription_button_handler(message: Message, state: FSMContext):
 
 
 # ------------------------------------------------------------
-# Обработка ввода города (общий для прогноза и рассылки)
+# Общий обработчик ввода города (для прогноза и начала рассылки)
 # ------------------------------------------------------------
 @router.message(WeatherState.waiting_city, F.text)
 async def process_city_input(message: Message, state: FSMContext):
@@ -80,31 +79,20 @@ async def process_city_input(message: Message, state: FSMContext):
         return
 
     data = await state.get_data()
-    is_subscription = data.get("subscription", False)
+    is_subscription = data.get("is_subscription", False)
 
     if is_subscription:
-        # --- Логика настройки рассылки ---
-        # Сохраняем город и запрашиваем день прогноза (сегодня/завтра)
+        # === Логика НАСТРОЙКИ РАССЫЛКИ (шаг 1: город) ===
         await state.update_data(city=city)
-        # Создаём инлайн-кнопки для выбора дня
-        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌅 Сегодня (утро)", callback_data="sub_today")],
-            [InlineKeyboardButton(text="🌇 Завтра (вечер)", callback_data="sub_tomorrow")]
+            [InlineKeyboardButton(text="🌅 На сегодня (утром)", callback_data="sub_today")],
+            [InlineKeyboardButton(text="🌇 На завтра (вечером)", callback_data="sub_tomorrow")]
         ])
         await message.answer("Выберите, прогноз на какой день вы хотите получать:", reply_markup=kb)
-        # Устанавливаем новое состояние для выбора дня (чтобы не путать с вводом города)
-        # Можно использовать то же состояние, но мы перейдём в новое состояние для дня
-        from aiogram.fsm.state import State
-        class SubState(StatesGroup):
-            waiting_day = State()
-
-        # Но проще сохранить в data и использовать отдельный обработчик callback
-        # Мы обработаем callback ниже
-        # Пока просто сохраняем город и ждём callback
+        # Остаёмся в waiting_city до выбора дня
         return
     else:
-        # --- Логика обычного прогноза ---
+        # === Логика ОБЫЧНОГО ПРОГНОЗА ===
         forecast_type = data.get("forecast_type")
         day_label = data.get("day_label")
         if not forecast_type:
@@ -121,7 +109,6 @@ async def process_city_input(message: Message, state: FSMContext):
             await state.clear()
             return
 
-        # Логируем запрос пользователя
         username = message.from_user.username
         log_user_request(city, message.from_user.id, username)
 
@@ -136,32 +123,29 @@ async def process_city_input(message: Message, state: FSMContext):
 
 
 # ------------------------------------------------------------
-# Обработка callback для выбора дня рассылки (sub_today / sub_tomorrow)
+# Обработка выбора дня для рассылки (инлайн-кнопки)
 # ------------------------------------------------------------
 @router.callback_query(F.data.startswith("sub_"))
 async def subscription_day_callback(callback: CallbackQuery, state: FSMContext):
     forecast_type = "today" if callback.data == "sub_today" else "tomorrow"
     await state.update_data(forecast_type=forecast_type)
 
-    # Получаем город из состояния
     data = await state.get_data()
     city = data.get("city")
     if not city:
-        await callback.message.answer("Ошибка: город не найден. Начните заново с кнопки 'Настроить рассылку'.")
+        await callback.message.answer("Ошибка: город не найден. Начните заново.")
         await state.clear()
         await callback.answer()
         return
 
-    # Предлагаем выбрать час (утро для today, вечер для tomorrow)
+    # Подготавливаем часы
     if forecast_type == "today":
-        hours = list(range(6, 12))  # 6-11
+        hours = list(range(6, 12))
         label = "утром"
     else:
-        hours = list(range(18, 24))  # 18-23
+        hours = list(range(18, 24))
         label = "вечером"
 
-    # Клавиатура с часами
-    from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
     buttons = [[KeyboardButton(text=f"{h}:00")] for h in hours]
     kb = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=True)
     await callback.message.answer(
@@ -169,31 +153,23 @@ async def subscription_day_callback(callback: CallbackQuery, state: FSMContext):
         "Выберите час, в который вам удобно получать прогноз:",
         reply_markup=kb
     )
-    # Переходим в состояние ожидания часа (можно использовать то же или новое)
-    # Для простоты используем то же состояние, но добавим флаг ожидания часа
-    await state.update_data(waiting_hour=True)
+    # Переключаем состояние на ожидание часа
+    await state.set_state(WeatherState.waiting_hour)
     await callback.answer()
 
 
 # ------------------------------------------------------------
-# Обработка выбора часа (для рассылки)
+# Обработка выбора часа для рассылки (Reply-кнопки)
 # ------------------------------------------------------------
-@router.message(WeatherState.waiting_city, F.text)
+@router.message(WeatherState.waiting_hour, F.text)
 async def process_subscription_hour(message: Message, state: FSMContext):
-    # Проверяем, что мы действительно ждём час (флаг waiting_hour)
-    data = await state.get_data()
-    if not data.get("waiting_hour"):
-        # Если не ждём час, то этот обработчик не должен сработать, но на всякий случай пропускаем
-        return
-
     hour_text = message.text.strip()
     if not hour_text.endswith(":00") or not hour_text[:-3].isdigit():
         await message.answer("Пожалуйста, выберите час из предложенных кнопок.")
         return
 
     hour = int(hour_text.split(":")[0])
-    # Сохраняем подписку
-    user_id = message.from_user.id
+    data = await state.get_data()
     city = data.get("city")
     forecast_type = data.get("forecast_type")
 
@@ -202,12 +178,12 @@ async def process_subscription_hour(message: Message, state: FSMContext):
         await state.clear()
         return
 
+    user_id = message.from_user.id
     sub = {
         "city": city,
         "forecast_type": forecast_type,
         "hour": hour
     }
-    # Загружаем существующие подписки
     subs = {}
     if os.path.exists("subscriptions.json"):
         with open("subscriptions.json", "r", encoding="utf-8") as f:
@@ -228,9 +204,9 @@ async def process_subscription_hour(message: Message, state: FSMContext):
 
 
 # ------------------------------------------------------------
-# Обработка простого текстового ввода (без кнопок) - даём прогноз на неделю
+# Обработка текста без кнопок (просто ввод города) – даём прогноз на неделю
 # ------------------------------------------------------------
-@router.message(F.text, ~StateFilter(WeatherState.waiting_city))
+@router.message(F.text, ~StateFilter(WeatherState.waiting_city), ~StateFilter(WeatherState.waiting_hour))
 async def text_city_fallback(message: Message):
     city = message.text.strip()
     if len(city) < 2:
@@ -241,7 +217,6 @@ async def text_city_fallback(message: Message):
     if "error" in forecast_data:
         await message.answer(f"Город '{city}' не найден. Нажмите кнопку и введите город ещё раз.")
         return
-    # Логируем запрос
     username = message.from_user.username
     log_user_request(city, message.from_user.id, username)
     response = format_weekly_forecast(forecast_data)

@@ -1,4 +1,4 @@
-from datetime import datetime
+
 from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.filters import CommandStart, StateFilter
@@ -8,10 +8,20 @@ from logger import log_user_request
 from keyboards import get_main_reply_keyboard
 from weather_api import get_weather_forecast
 
+import json
+import os
+from datetime import datetime, time
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from formatters import safe_send, format_hourly_forecast, format_weekly_forecast
+
+
 router = Router()
 
 class WeatherState(StatesGroup):
     waiting_city = State()
+    waiting_forecast_type = State()  # today или tomorrow
+    waiting_hour = State()
 
 async def safe_send(message: Message, text: str):
     if len(text) > 4096:
@@ -122,6 +132,87 @@ async def start_command(message: Message):
         "Привет! Я бот прогноза погоды.\nИспользую модель ECMWF IFS HRES.\n\nНажми на одну из кнопок внизу, затем напиши название города.",
         reply_markup=get_main_reply_keyboard()
     )
+
+class WeatherState(StatesGroup):
+    waiting_city = State()
+    waiting_forecast_type = State()  # today или tomorrow
+    waiting_hour = State()
+
+@router.message(F.text == "⏰ Настроить рассылку")
+async def setup_subscription(message: Message, state: FSMContext):
+    await state.set_state(WeatherState.waiting_city)
+    await message.answer(
+        "Настройка ежедневной рассылки прогноза.\n"
+        "Введите название вашего города (например, Москва):"
+    )
+
+@router.message(WeatherState.waiting_city, F.text)
+async def process_subscription_city(message: Message, state: FSMContext):
+    city = message.text.strip()
+    if len(city) < 2:
+        await message.answer("Слишком короткое название. Попробуйте ещё раз.")
+        return
+    await state.update_data(city=city)
+    await state.set_state(WeatherState.waiting_forecast_type)
+    # Инлайн-клавиатура для выбора дня
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌅 Сегодня (утро)", callback_data="sub_today")],
+        [InlineKeyboardButton(text="🌇 Завтра (вечер)", callback_data="sub_tomorrow")]
+    ])
+    await message.answer("Выберите, прогноз на какой день вы хотите получать:", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("sub_"))
+async def subscription_type(callback: CallbackQuery, state: FSMContext):
+    forecast_type = "today" if callback.data == "sub_today" else "tomorrow"
+    await state.update_data(forecast_type=forecast_type)
+    await state.set_state(WeatherState.waiting_hour)
+    # Клавиатура с часами (утро 6-11, вечер 18-23)
+    hours = list(range(6, 12)) if forecast_type == "today" else list(range(18, 24))
+    buttons = [[KeyboardButton(text=f"{h}:00")] for h in hours]
+    kb = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=True)
+    await callback.message.answer("Выберите час, в который вам удобно получать прогноз:", reply_markup=kb)
+    await callback.answer()
+
+
+@router.message(WeatherState.waiting_hour, F.text)
+async def subscription_hour(message: Message, state: FSMContext):
+    hour_text = message.text.strip()
+    if not hour_text.endswith(":00"):
+        await message.answer("Пожалуйста, выберите час из предложенных кнопок.")
+        return
+    hour = int(hour_text.split(":")[0])
+    data = await state.get_data()
+    city = data["city"]
+    forecast_type = data["forecast_type"]
+
+    # Сохраняем подписку
+    user_id = message.from_user.id
+    sub = {
+        "city": city,
+        "forecast_type": forecast_type,
+        "hour": hour
+    }
+    # Загружаем существующие подписки
+    subs = {}
+    if os.path.exists("subscriptions.json"):
+        with open("subscriptions.json", "r", encoding="utf-8") as f:
+            subs = json.load(f)
+    subs[str(user_id)] = sub
+    with open("subscriptions.json", "w", encoding="utf-8") as f:
+        json.dump(subs, f, indent=2, ensure_ascii=False)
+
+    await state.clear()
+    await message.answer(
+        f"✅ Рассылка настроена!\n"
+        f"Город: {city}\n"
+        f"Прогноз: {'на сегодня (утром)' if forecast_type == 'today' else 'на завтра (вечером)'}\n"
+        f"Время: {hour}:00\n\n"
+        "Вы можете изменить настройки, снова нажав 'Настроить рассылку'.",
+        reply_markup=get_main_reply_keyboard()
+    )
+
 
 @router.message(F.text.in_(["🌤 Прогноз на сегодня", "⛅ Прогноз на завтра", "📅 Прогноз на неделю"]))
 async def reply_button_handler(message: Message, state: FSMContext):

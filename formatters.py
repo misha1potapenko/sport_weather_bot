@@ -13,6 +13,16 @@ async def safe_send(message, text: str):
         await message.answer(text)
 
 
+
+async def send_long_message(bot, chat_id: int, text: str):
+    """Отправляет длинное сообщение через бота, разбивая на части."""
+    if len(text) > 4096:
+        for x in range(0, len(text), 4096):
+            await bot.send_message(chat_id, text[x:x+4096])
+    else:
+        await bot.send_message(chat_id, text)
+
+
 def format_hourly_forecast(data: dict, day_label: str) -> str:
     """
     Почасовой прогноз с интервалом 3 часа.

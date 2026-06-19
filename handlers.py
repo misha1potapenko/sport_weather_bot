@@ -7,7 +7,7 @@ from aiogram.fsm.state import State, StatesGroup
 from logger import log_user_request
 from keyboards import get_main_reply_keyboard
 from weather_api import get_weather_forecast
-
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 import json
 import os
 from datetime import datetime, time
